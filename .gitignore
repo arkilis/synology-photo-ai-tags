@@ -1,0 +1,22 @@
+# Python virtual environment
+bin/
+include/
+lib/
+pyvenv.cfg
+
+# Local configuration
+.env
+.env.*
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Project runtime outputs
+progress.json
+.ai-tags-progress.json
+*.xmp
+*_BAK
+
+# macOS
+.DS_Store
