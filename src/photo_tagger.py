@@ -33,6 +33,14 @@ class ProgressEntry:
     updated_at: str
 
 
+@dataclass(slots=True)
+class PendingAsset:
+    list_index: int
+    asset_path: Path
+    input_image: Path
+    existing_entry: dict[str, object] | None
+
+
 class PhotoTagger:
     def __init__(self, config: AppConfig):
         self.config = config
@@ -50,6 +58,7 @@ class PhotoTagger:
         processed_count = 0
         skipped_count = 0
         failed_count = 0
+        pending_assets: list[PendingAsset] = []
         assets = list(self._iter_assets())
 
         print(
@@ -74,28 +83,39 @@ class PhotoTagger:
                     continue
 
                 input_image = self._select_input_image(asset_path)
-                result = self.client.analyze_image(input_image)
-                if not self.config.dry_run:
-                    write_result = write_photo_metadata(
-                        asset_path,
-                        result,
-                        is_raw=asset_path.suffix.lower() in self.config.raw_extensions,
-                        previous_generated_keywords=_coerce_string_list(
-                            existing_entry.get("generated_keywords") if existing_entry else None
-                        ),
-                        previous_generated_description=str(
-                            existing_entry.get("generated_description", "") if existing_entry else ""
-                        ),
+                pending_assets.append(
+                    PendingAsset(
+                        list_index=index,
+                        asset_path=asset_path,
+                        input_image=input_image,
+                        existing_entry=existing_entry,
                     )
-                    self._record_success(asset_path, input_image, write_result)
-                processed_count += 1
-                print(
-                    f"[{index}/{len(assets)}] tagged {asset_path} "
-                    f"({len(result.generated_keywords)} keywords)"
                 )
+                if (
+                    len(pending_assets) >= self.config.batch_size
+                    or (
+                        self.config.max_files_per_run is not None
+                        and processed_count + len(pending_assets) >= self.config.max_files_per_run
+                    )
+                ):
+                    batch_processed, batch_failed = self._process_pending_assets(
+                        pending_assets,
+                        total_assets=len(assets),
+                    )
+                    processed_count += batch_processed
+                    failed_count += batch_failed
+                    pending_assets = []
             except Exception as exc:  # noqa: BLE001
                 failed_count += 1
                 print(f"[{index}/{len(assets)}] fail {asset_path}: {exc}")
+
+        if pending_assets:
+            batch_processed, batch_failed = self._process_pending_assets(
+                pending_assets,
+                total_assets=len(assets),
+            )
+            processed_count += batch_processed
+            failed_count += batch_failed
 
         print(
             "Done. "
@@ -190,6 +210,107 @@ class PhotoTagger:
             if candidate.is_file():
                 return candidate
         return None
+
+    def _process_pending_assets(
+        self,
+        pending_assets: list[PendingAsset],
+        *,
+        total_assets: int,
+    ) -> tuple[int, int]:
+        if not pending_assets:
+            return 0, 0
+
+        try:
+            results = self.client.analyze_images(
+                [pending_asset.input_image for pending_asset in pending_assets]
+            )
+            if len(results) != len(pending_assets):
+                raise RuntimeError(
+                    f"Gemini returned {len(results)} results for "
+                    f"{len(pending_assets)} input images."
+                )
+            return self._finalize_batch_results(
+                pending_assets,
+                results,
+                total_assets=total_assets,
+            )
+        except Exception as exc:  # noqa: BLE001
+            if len(pending_assets) == 1:
+                print(
+                    f"[{pending_assets[0].list_index}/{total_assets}] "
+                    f"fail {pending_assets[0].asset_path}: {exc}"
+                )
+                return 0, 1
+
+            print(
+                f"Batch request failed for {len(pending_assets)} images: {exc}. "
+                "Falling back to single-image retries."
+            )
+            processed_count = 0
+            failed_count = 0
+            for pending_asset in pending_assets:
+                try:
+                    result = self.client.analyze_image(pending_asset.input_image)
+                    processed, failed = self._finalize_batch_results(
+                        [pending_asset],
+                        [result],
+                        total_assets=total_assets,
+                    )
+                    processed_count += processed
+                    failed_count += failed
+                except Exception as single_exc:  # noqa: BLE001
+                    failed_count += 1
+                    print(
+                        f"[{pending_asset.list_index}/{total_assets}] "
+                        f"fail {pending_asset.asset_path}: {single_exc}"
+                    )
+            return processed_count, failed_count
+
+    def _finalize_batch_results(
+        self,
+        pending_assets: list[PendingAsset],
+        results: list,
+        *,
+        total_assets: int,
+    ) -> tuple[int, int]:
+        processed_count = 0
+        failed_count = 0
+        for pending_asset, result in zip(pending_assets, results, strict=True):
+            try:
+                if not self.config.dry_run:
+                    write_result = write_photo_metadata(
+                        pending_asset.asset_path,
+                        result,
+                        is_raw=pending_asset.asset_path.suffix.lower() in self.config.raw_extensions,
+                        previous_generated_keywords=_coerce_string_list(
+                            pending_asset.existing_entry.get("generated_keywords")
+                            if pending_asset.existing_entry
+                            else None
+                        ),
+                        previous_generated_description=str(
+                            pending_asset.existing_entry.get("generated_description", "")
+                            if pending_asset.existing_entry
+                            else ""
+                        ),
+                    )
+                    self._record_success(
+                        pending_asset.asset_path,
+                        pending_asset.input_image,
+                        write_result,
+                    )
+                processed_count += 1
+                print(
+                    f"[{pending_asset.list_index}/{total_assets}] "
+                    f"tagged {pending_asset.asset_path} "
+                    f"({len(result.generated_keywords)} keywords)"
+                )
+            except Exception as exc:  # noqa: BLE001
+                failed_count += 1
+                print(
+                    f"[{pending_asset.list_index}/{total_assets}] "
+                    f"fail {pending_asset.asset_path}: {exc}"
+                )
+        return processed_count, failed_count
 
     def _record_success(
         self,

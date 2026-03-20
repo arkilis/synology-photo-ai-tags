@@ -57,6 +57,7 @@ class AppConfig:
     requests_per_minute: int
     request_timeout_seconds: int
     max_inline_bytes: int
+    batch_size: int
     max_files_per_run: int | None
     wait_for_root_seconds: int
     force_reprocess: bool
@@ -130,6 +131,11 @@ def parse_args() -> AppConfig:
         help="Max image bytes sent inline to Gemini before falling back to @eaDir thumbnail.",
     )
     parser.add_argument(
+        "--batch-size",
+        type=int,
+        help="Number of images to send in one Gemini request.",
+    )
+    parser.add_argument(
         "--max-files-per-run",
         type=int,
         help="Stop after processing this many new files in the current run.",
@@ -181,6 +187,11 @@ def parse_args() -> AppConfig:
         or int(os.getenv("REQUEST_TIMEOUT_SECONDS", "90")),
         max_inline_bytes=args.max_inline_bytes
         or int(os.getenv("MAX_INLINE_BYTES", str(14 * 1024 * 1024))),
+        batch_size=(
+            args.batch_size
+            if args.batch_size is not None
+            else int(os.getenv("BATCH_SIZE", "5"))
+        ),
         max_files_per_run=(
             args.max_files_per_run
             if args.max_files_per_run is not None
@@ -209,6 +220,8 @@ def parse_args() -> AppConfig:
 
     if config.requests_per_minute <= 0:
         raise SystemExit("requests-per-minute must be greater than 0.")
+    if config.batch_size <= 0:
+        raise SystemExit("batch-size must be greater than 0.")
     if config.max_files_per_run is not None and config.max_files_per_run <= 0:
         raise SystemExit("max-files-per-run must be greater than 0.")
     if config.wait_for_root_seconds < 0:

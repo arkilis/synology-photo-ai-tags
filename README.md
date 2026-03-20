@@ -24,6 +24,7 @@ This metadata is then written back to the photo so it can be searched directly i
 - Creates a backup copy as `original_filename_BAK` before modifying a regular image
 - Restores the original `modified date/time` after writing metadata to a regular image
 - Can wait for a NAS mount to become available before starting
+- Supports sending multiple images in a single Gemini request
 - Supports limiting how many new files are processed per run to help control API usage
 
 ## Current Write Strategy
@@ -96,6 +97,7 @@ You can also add optional settings such as:
 ```env
 GEMINI_MODEL=gemini-2.5-flash
 REQUESTS_PER_MINUTE=8
+BATCH_SIZE=5
 MAX_FILES_PER_RUN=220
 WAIT_FOR_ROOT_SECONDS=300
 ```
@@ -106,6 +108,7 @@ WAIT_FOR_ROOT_SECONDS=300
 
 ```bash
 python3 -m src \
+  --batch-size 5 \
   --progress /Volumes/homes/ben/Photos/.ai-tags-progress.json \
   --root /Volumes/homes/ben/Photos/
 ```
@@ -143,6 +146,7 @@ you can safely ignore it for the current version of this project, because the ru
 python3 -m src \
   --model gemini-2.5-flash \
   --requests-per-minute 8 \
+  --batch-size 5 \
   --max-files-per-run 220 \
   --wait-for-root-seconds 300 \
   --progress /Volumes/homes/ben/Photos/.ai-tags-progress.json \
@@ -153,6 +157,7 @@ python3 -m src \
 
 ```bash
 python3 -m src \
+  --batch-size 5 \
   --progress /Volumes/homes/ben/Photos/.ai-tags-progress.json \
   --root /Volumes/homes/ben/Photos/MobileBackup/iPhone/2026/test
 ```
@@ -162,6 +167,7 @@ python3 -m src \
 ```bash
 python3 -m src \
   --dry-run \
+  --batch-size 5 \
   --progress /Volumes/homes/ben/Photos/.ai-tags-progress.json \
   --root /Volumes/homes/ben/Photos/
 ```
@@ -174,6 +180,7 @@ python3 -m src \
 - `--requests-per-minute`: client-side rate limit
 - `--request-timeout`: request timeout in seconds
 - `--max-inline-bytes`: send small images inline; larger ones use the Files API
+- `--batch-size`: number of images to send in one Gemini request
 - `--max-files-per-run`: maximum number of new files to process in a single run
 - `--wait-for-root-seconds`: how long to wait for the NAS path to appear
 - `--force`: ignore the progress file and reprocess everything

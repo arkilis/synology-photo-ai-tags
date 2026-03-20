@@ -56,24 +56,66 @@ class GeminiClient:
         self._last_request_monotonic = 0.0
 
     def analyze_image(self, image_path: Path) -> AnalysisResult:
+        return self.analyze_images([image_path])[0]
+
+    def analyze_images(self, image_paths: list[Path]) -> list[AnalysisResult]:
+        if not image_paths:
+            return []
+
+        uploaded_files: list[dict[str, str]] = []
+        parts: list[dict[str, object]] = [{"text": _batch_analysis_prompt(image_paths)}]
+        try:
+            for index, image_path in enumerate(image_paths, start=1):
+                parts.append({"text": f"Image {index} filename: {image_path.name}"})
+                image_part, uploaded_file = self._build_image_part(image_path)
+                parts.append(image_part)
+                if uploaded_file is not None:
+                    uploaded_files.append(uploaded_file)
+
+            payload = {
+                "contents": [{"parts": parts}],
+                "generationConfig": _batch_generation_config(),
+            }
+            self._wait_for_rate_limit()
+            response_json = self._json_request(
+                GEMINI_ENDPOINT.format(model=self.model),
+                payload,
+                method="POST",
+                use_query_key=True,
+                mark_rate_limited=True,
+            )
+            parsed = _extract_response_json(response_json)
+            return _parse_batch_results(parsed, expected_count=len(image_paths))
+        finally:
+            for uploaded_file in uploaded_files:
+                self._delete_file(uploaded_file["name"])
+
+    def _build_image_part(
+        self,
+        image_path: Path,
+    ) -> tuple[dict[str, object], dict[str, str] | None]:
         mime_type = mimetypes.guess_type(image_path.name)[0] or "image/jpeg"
         if image_path.stat().st_size <= self.max_inline_bytes:
-            response_json = self._analyze_inline(image_path, mime_type)
-        else:
-            response_json = self._analyze_via_files_api(image_path, mime_type)
-        parsed = _extract_response_json(response_json)
-        return AnalysisResult(
-            summary_zh=_clean_text(parsed.get("summary_zh", "")),
-            summary_en=_clean_text(parsed.get("summary_en", "")),
-            tags_zh=_normalize_keywords(parsed.get("tags_zh", []), lowercase=False),
-            tags_en=_normalize_keywords(parsed.get("tags_en", []), lowercase=True),
-            ocr_text=_normalize_ocr_lines(parsed.get("ocr_text", [])),
-            ocr_keywords_zh=_normalize_keywords(
-                parsed.get("ocr_keywords_zh", []), lowercase=False
-            ),
-            ocr_keywords_en=_normalize_keywords(
-                parsed.get("ocr_keywords_en", []), lowercase=True
-            ),
+            image_bytes = image_path.read_bytes()
+            return (
+                {
+                    "inline_data": {
+                        "mime_type": mime_type,
+                        "data": base64.b64encode(image_bytes).decode("ascii"),
+                    }
+                },
+                None,
+            )
+
+        uploaded_file = self._upload_file(image_path, mime_type)
+        return (
+            {
+                "file_data": {
+                    "mime_type": uploaded_file["mime_type"],
+                    "file_uri": uploaded_file["uri"],
+                }
+            },
+            uploaded_file,
         )
 
     def _analyze_inline(self, image_path: Path, mime_type: str) -> dict[str, object]:
@@ -82,7 +124,7 @@ class GeminiClient:
             "contents": [
                 {
                     "parts": [
-                        {"text": _analysis_prompt()},
+                        {"text": _single_image_prompt()},
                         {
                             "inline_data": {
                                 "mime_type": mime_type,
@@ -110,7 +152,7 @@ class GeminiClient:
                 "contents": [
                     {
                         "parts": [
-                            {"text": _analysis_prompt()},
+                            {"text": _single_image_prompt()},
                             {
                                 "file_data": {
                                     "mime_type": uploaded_file["mime_type"],
@@ -266,10 +308,33 @@ def _analysis_prompt() -> str:
     )
 
 
+def _single_image_prompt() -> str:
+    return _analysis_prompt()
+
+
+def _batch_analysis_prompt(image_paths: list[Path]) -> str:
+    return (
+        _analysis_prompt()
+        + f"\n本次请求共有 {len(image_paths)} 张图片，按顺序编号为 1 到 {len(image_paths)}。\n"
+        "请返回一个 JSON 对象，顶层字段必须是 `results`。\n"
+        "`results` 必须是数组，数组长度必须与图片数量一致。\n"
+        "每个结果对象都必须包含 `index` 字段，值为对应图片的 1-based 编号。\n"
+        "结果顺序要与输入图片顺序一致，不要遗漏任何一张。\n"
+    )
+
+
 def _generation_config() -> dict[str, object]:
     return {
         "responseMimeType": "application/json",
         "responseJsonSchema": _response_schema(),
+        "temperature": 0.2,
+    }
+
+
+def _batch_generation_config() -> dict[str, object]:
+    return {
+        "responseMimeType": "application/json",
+        "responseJsonSchema": _batch_response_schema(),
         "temperature": 0.2,
     }
 
@@ -296,6 +361,27 @@ def _response_schema() -> dict[str, object]:
             "ocr_keywords_zh",
             "ocr_keywords_en",
         ],
+    }
+
+
+def _batch_response_schema() -> dict[str, object]:
+    item_schema = {
+        "type": "object",
+        "properties": {
+            "index": {"type": "integer"},
+            **_response_schema()["properties"],
+        },
+        "required": ["index", *_response_schema()["required"]],
+    }
+    return {
+        "type": "object",
+        "properties": {
+            "results": {
+                "type": "array",
+                "items": item_schema,
+            }
+        },
+        "required": ["results"],
     }
 
 
@@ -337,6 +423,58 @@ def _extract_response_json(response_json: dict[str, object]) -> dict[str, object
             return json.loads(text)
 
     raise RuntimeError(f"Gemini returned no text part: {response_json}")
+
+
+def _parse_batch_results(parsed: dict[str, object], expected_count: int) -> list[AnalysisResult]:
+    raw_results = parsed.get("results")
+    if not isinstance(raw_results, list) or not raw_results:
+        raise RuntimeError(f"Gemini returned no batch results: {parsed}")
+
+    indexed_results: dict[int, AnalysisResult] = {}
+    valid_indexes = True
+    for item in raw_results:
+        if not isinstance(item, dict):
+            valid_indexes = False
+            continue
+        index = item.get("index")
+        if not isinstance(index, int):
+            valid_indexes = False
+            continue
+        indexed_results[index] = _normalize_analysis_result(item)
+
+    if valid_indexes and all(index in indexed_results for index in range(1, expected_count + 1)):
+        return [indexed_results[index] for index in range(1, expected_count + 1)]
+
+    if len(raw_results) != expected_count:
+        raise RuntimeError(
+            f"Gemini returned {len(raw_results)} results for {expected_count} images: {parsed}"
+        )
+    normalized_results = [
+        _normalize_analysis_result(item)
+        for item in raw_results
+        if isinstance(item, dict)
+    ]
+    if len(normalized_results) != expected_count:
+        raise RuntimeError(
+            f"Gemini returned malformed batch results for {expected_count} images: {parsed}"
+        )
+    return normalized_results
+
+
+def _normalize_analysis_result(parsed: dict[str, object]) -> AnalysisResult:
+    return AnalysisResult(
+        summary_zh=_clean_text(parsed.get("summary_zh", "")),
+        summary_en=_clean_text(parsed.get("summary_en", "")),
+        tags_zh=_normalize_keywords(parsed.get("tags_zh", []), lowercase=False),
+        tags_en=_normalize_keywords(parsed.get("tags_en", []), lowercase=True),
+        ocr_text=_normalize_ocr_lines(parsed.get("ocr_text", [])),
+        ocr_keywords_zh=_normalize_keywords(
+            parsed.get("ocr_keywords_zh", []), lowercase=False
+        ),
+        ocr_keywords_en=_normalize_keywords(
+            parsed.get("ocr_keywords_en", []), lowercase=True
+        ),
+    )
 
 
 def _clean_text(value: object) -> str:
