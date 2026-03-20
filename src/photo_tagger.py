@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import time
 from dataclasses import asdict, dataclass
@@ -25,7 +24,6 @@ THUMBNAIL_CANDIDATES = (
 @dataclass(slots=True)
 class ProgressEntry:
     path: str
-    source_md5: str
     source_size: int
     source_mtime_ns: int
     input_image: str
@@ -70,8 +68,7 @@ class PhotoTagger:
                 break
             try:
                 existing_entry = self._get_progress_entry(asset_path)
-                current_md5 = self._compute_md5(asset_path)
-                if self._should_skip(asset_path, current_md5=current_md5, entry=existing_entry):
+                if self._should_skip(asset_path, entry=existing_entry):
                     skipped_count += 1
                     print(f"[{index}/{len(assets)}] skip {asset_path}")
                     continue
@@ -90,12 +87,7 @@ class PhotoTagger:
                             existing_entry.get("generated_description", "") if existing_entry else ""
                         ),
                     )
-                    final_md5 = (
-                        current_md5
-                        if write_result.storage_mode == "xmp"
-                        else self._compute_md5(asset_path)
-                    )
-                    self._record_success(asset_path, input_image, write_result, final_md5)
+                    self._record_success(asset_path, input_image, write_result)
                 processed_count += 1
                 print(
                     f"[{index}/{len(assets)}] tagged {asset_path} "
@@ -161,7 +153,6 @@ class PhotoTagger:
         self,
         asset_path: Path,
         *,
-        current_md5: str,
         entry: dict[str, object] | None,
     ) -> bool:
         if self.config.force_reprocess:
@@ -173,7 +164,7 @@ class PhotoTagger:
             sidecar_path = asset_path.with_suffix(".xmp")
             if not sidecar_path.exists():
                 return False
-        return entry.get("source_md5") == current_md5
+        return True
 
     def _select_input_image(self, asset_path: Path) -> Path:
         thumbnail = self._find_thumbnail(asset_path)
@@ -205,13 +196,11 @@ class PhotoTagger:
         asset_path: Path,
         input_image: Path,
         write_result,
-        source_md5: str,
     ) -> None:
         stat = asset_path.stat()
         key = str(asset_path.resolve())
         entry = ProgressEntry(
             path=key,
-            source_md5=source_md5,
             source_size=stat.st_size,
             source_mtime_ns=stat.st_mtime_ns,
             input_image=(
@@ -248,13 +237,6 @@ class PhotoTagger:
         if isinstance(legacy_name_entry, dict):
             return legacy_name_entry
         return None
-
-    def _compute_md5(self, asset_path: Path) -> str:
-        digest = hashlib.md5(usedforsecurity=False)
-        with asset_path.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
-        return digest.hexdigest()
 
 
 def _coerce_string_list(value: object) -> list[str]:
