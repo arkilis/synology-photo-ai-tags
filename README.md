@@ -51,6 +51,7 @@ RAW files are never modified directly. The script writes a neighboring `.xmp` si
 - `exiftool`
 - A Gemini API key if you use the Gemini backend
 - Ollama if you use the local Ollama backend
+- ImageMagick if you run the Ollama backend on Windows and need to convert `HEIC/HEIF/HIF/TIFF/BMP/GIF`
 
 At runtime, the current code only uses the Python standard library. It does **not** require pip packages such as `google-genai`, `httpx`, or `anyio`.
 
@@ -85,6 +86,8 @@ brew install exiftool
 
 If the script runs in another environment, make sure `exiftool` is available in `PATH`.
 
+On Windows, install `exiftool` and make sure `exiftool.exe` is available in `PATH`.
+
 ### 3. Configure the Model Backend
 
 For Gemini:
@@ -105,6 +108,15 @@ OLLAMA_HOST=http://localhost:11434
 
 Use `localhost` or `127.0.0.1` for local runs.
 Do not use `0.0.0.0` as the client host. `0.0.0.0` is a bind/listen address, not a target address.
+
+For Windows + Ollama, you can also add:
+
+```env
+MODEL_BACKEND=ollama
+OLLAMA_MODEL=qwen2.5vl:7b
+OLLAMA_HOST=http://localhost:11434
+IMAGE_CONVERTER_BIN=magick
+```
 
 You can also add optional shared settings such as:
 
@@ -149,6 +161,40 @@ Recommended starting point for `qwen2.5vl:7b` on a Mac mini Pro:
 - `--requests-per-minute 60`
 
 When using the Ollama backend on macOS, the script will automatically convert formats such as `HEIC/HEIF/HIF/TIFF/BMP/GIF` into temporary `JPEG` files before sending them to Ollama. Native `jpg/png/webp` files are sent directly.
+
+On Windows, the Ollama backend uses `magick` for the same temporary conversion path. If `magick` is not in `PATH`, pass `--image-converter-bin` explicitly.
+
+### Run on Windows 10 + 3080 Ti
+
+If your NAS is mounted as a drive such as `Z:`, a typical command looks like this:
+
+```powershell
+python -m src `
+  --backend ollama `
+  --model qwen2.5vl:7b `
+  --ollama-host http://localhost:11434 `
+  --image-converter-bin magick `
+  --batch-size 4 `
+  --requests-per-minute 999 `
+  --request-timeout 600 `
+  --progress Z:\Photos\.ai-tags-progress.json `
+  --root Z:\Photos
+```
+
+You can also use the included helper script:
+
+```powershell
+.\run-windows.ps1 -Root Z:\Photos
+```
+
+`run-windows.ps1` checks `magick` and `exiftool` first. If either command is missing, it attempts to install them with `winget` before starting the Python script.
+
+Recommended Windows setup:
+
+- Install Ollama and confirm the model is available: `ollama list`
+- Install ImageMagick and ensure `magick` works in PowerShell
+- Install `exiftool` and ensure `exiftool` works in PowerShell
+- Mount the NAS share to a stable drive letter before running the script
 
 ## Running on Synology NAS
 
@@ -217,6 +263,7 @@ python3 -m src \
 - `--backend`: `gemini` or `ollama`
 - `--model`: model name for the selected backend
 - `--ollama-host`: Ollama API host, defaults to `http://localhost:11434`
+- `--image-converter-bin`: optional converter command for Ollama, e.g. `sips` or `magick`
 - `--requests-per-minute`: client-side rate limit
 - `--request-timeout`: request timeout in seconds
 - `--max-inline-bytes`: thumbnail fallback threshold used when selecting input files

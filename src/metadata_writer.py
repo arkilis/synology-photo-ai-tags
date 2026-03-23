@@ -75,7 +75,7 @@ def _ensure_exiftool() -> None:
         return
     raise RuntimeError(
         "exiftool is required to embed metadata into non-RAW files. "
-        "Install exiftool on the NAS first."
+        "Install exiftool and make sure it is available in PATH."
     )
 
 

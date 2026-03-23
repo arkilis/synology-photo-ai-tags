@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import base64
 import json
-import os
+import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -28,11 +29,13 @@ class OllamaClient:
         *,
         model: str,
         host: str,
+        image_converter_bin: str | None,
         timeout_seconds: int,
         requests_per_minute: int,
     ):
         self.model = model
         self.host = host.rstrip("/")
+        self.image_converter_bin = image_converter_bin
         self.timeout_seconds = timeout_seconds
         self.min_interval_seconds = 60.0 / requests_per_minute
         self._last_request_monotonic = 0.0
@@ -131,10 +134,12 @@ class OllamaClient:
         return self._convert_to_jpeg(image_path), True
 
     def _convert_to_jpeg(self, image_path: Path) -> Path:
-        if not _has_sips():
+        converter = self.image_converter_bin or _default_image_converter()
+        if not converter:
             raise RuntimeError(
                 f"Ollama cannot read {image_path.suffix.lower()} directly and no converter "
-                "is available. On macOS, make sure 'sips' is installed and available."
+                "is available. Install ImageMagick and make sure 'magick' is in PATH, "
+                "or set --image-converter-bin explicitly."
             )
 
         with tempfile.NamedTemporaryFile(
@@ -146,15 +151,7 @@ class OllamaClient:
 
         try:
             subprocess.run(
-                [
-                    "sips",
-                    "-s",
-                    "format",
-                    "jpeg",
-                    str(image_path),
-                    "--out",
-                    str(temp_path),
-                ],
+                _converter_command(converter, image_path=image_path, output_path=temp_path),
                 check=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
@@ -163,14 +160,41 @@ class OllamaClient:
             return temp_path
         except subprocess.CalledProcessError as exc:
             temp_path.unlink(missing_ok=True)
-            stderr = exc.stderr.strip() if exc.stderr else "unknown sips error"
+            stderr = exc.stderr.strip() if exc.stderr else "unknown converter error"
             raise RuntimeError(
-                f"Failed to convert {image_path.name} to a temporary JPEG for Ollama: {stderr}"
+                f"Failed to convert {image_path.name} to a temporary JPEG for Ollama "
+                f"using {converter}: {stderr}"
             ) from exc
 
 
-def _has_sips() -> bool:
-    return os.path.exists("/usr/bin/sips")
+def _default_image_converter() -> str | None:
+    if sys.platform == "darwin" and shutil.which("sips"):
+        return "sips"
+    if shutil.which("magick"):
+        return "magick"
+    return None
+
+
+def _converter_command(converter: str, *, image_path: Path, output_path: Path) -> list[str]:
+    converter_name = Path(converter).name.lower()
+    if converter_name in {"sips", "sips.exe"}:
+        return [
+            converter,
+            "-s",
+            "format",
+            "jpeg",
+            str(image_path),
+            "--out",
+            str(output_path),
+        ]
+    return [
+        converter,
+        str(image_path),
+        "-auto-orient",
+        "-quality",
+        "92",
+        str(output_path),
+    ]
 
 
 def _read_base64(image_path: Path) -> str:

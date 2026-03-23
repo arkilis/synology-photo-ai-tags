@@ -57,6 +57,7 @@ class AppConfig:
     api_key: str
     model: str
     ollama_host: str
+    image_converter_bin: str | None
     requests_per_minute: int
     request_timeout_seconds: int
     max_inline_bytes: int
@@ -158,6 +159,10 @@ def parse_args() -> AppConfig:
         help="Ollama API host, e.g. http://localhost:11434.",
     )
     parser.add_argument(
+        "--image-converter-bin",
+        help="Optional image converter command for Ollama, e.g. sips or magick.",
+    )
+    parser.add_argument(
         "--requests-per-minute",
         type=int,
         help="Client-side rate limit between model requests.",
@@ -235,6 +240,9 @@ def parse_args() -> AppConfig:
         model=args.model or default_model,
         ollama_host=_normalize_ollama_host(
             args.ollama_host or os.getenv("OLLAMA_HOST", "http://localhost:11434")
+        ),
+        image_converter_bin=(
+            (args.image_converter_bin or os.getenv("IMAGE_CONVERTER_BIN", "")).strip() or None
         ),
         requests_per_minute=args.requests_per_minute
         or int(os.getenv("REQUESTS_PER_MINUTE", default_requests_per_minute)),

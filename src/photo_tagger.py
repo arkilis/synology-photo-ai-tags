@@ -123,6 +123,7 @@ class PhotoTagger:
             return OllamaClient(
                 model=self.config.model,
                 host=self.config.ollama_host,
+                image_converter_bin=self.config.image_converter_bin,
                 timeout_seconds=self.config.request_timeout_seconds,
                 requests_per_minute=self.config.requests_per_minute,
             )
