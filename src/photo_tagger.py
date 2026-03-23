@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .config import AppConfig
 from .gemini_client import GeminiClient
+from .ollama_client import OllamaClient
 from .metadata_writer import write_photo_metadata
 
 
@@ -44,13 +45,7 @@ class PendingAsset:
 class PhotoTagger:
     def __init__(self, config: AppConfig):
         self.config = config
-        self.client = GeminiClient(
-            api_key=config.api_key,
-            model=config.model,
-            timeout_seconds=config.request_timeout_seconds,
-            requests_per_minute=config.requests_per_minute,
-            max_inline_bytes=config.max_inline_bytes,
-        )
+        self.client = self._build_client()
         self.progress = self._load_progress()
 
     def run(self) -> None:
@@ -65,6 +60,7 @@ class PhotoTagger:
             f"Found {len(assets)} supported files under {self.config.root} "
             "(recursive scan enabled)"
         )
+        print(f"Using {self.config.backend} model {self.config.model}")
         for index, asset_path in enumerate(assets, start=1):
             if (
                 self.config.max_files_per_run is not None
@@ -120,6 +116,22 @@ class PhotoTagger:
         print(
             "Done. "
             f"processed={processed_count} skipped={skipped_count} failed={failed_count}"
+        )
+
+    def _build_client(self):
+        if self.config.backend == "ollama":
+            return OllamaClient(
+                model=self.config.model,
+                host=self.config.ollama_host,
+                timeout_seconds=self.config.request_timeout_seconds,
+                requests_per_minute=self.config.requests_per_minute,
+            )
+        return GeminiClient(
+            api_key=self.config.api_key,
+            model=self.config.model,
+            timeout_seconds=self.config.request_timeout_seconds,
+            requests_per_minute=self.config.requests_per_minute,
+            max_inline_bytes=self.config.max_inline_bytes,
         )
 
     def _wait_for_root(self) -> None:

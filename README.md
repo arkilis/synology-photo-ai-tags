@@ -2,7 +2,7 @@
 
 A script that automatically tags photos and writes the results back into photo metadata.
 
-The current implementation uses the Gemini Vision API to generate, for each photo:
+The current implementation can use either the Gemini Vision API or a local Ollama vision model to generate, for each photo:
 
 - Chinese tags
 - English tags
@@ -24,7 +24,7 @@ This metadata is then written back to the photo so it can be searched directly i
 - Creates a backup copy as `original_filename_BAK` before modifying a regular image
 - Restores the original `modified date/time` after writing metadata to a regular image
 - Can wait for a NAS mount to become available before starting
-- Supports sending multiple images in a single Gemini request
+- Supports sending multiple images in a single model request
 - Supports limiting how many new files are processed per run to help control API usage
 
 ## Current Write Strategy
@@ -49,7 +49,8 @@ RAW files are never modified directly. The script writes a neighboring `.xmp` si
 
 - Python 3.10+ recommended
 - `exiftool`
-- A Gemini API key
+- A Gemini API key if you use the Gemini backend
+- Ollama if you use the local Ollama backend
 
 At runtime, the current code only uses the Python standard library. It does **not** require pip packages such as `google-genai`, `httpx`, or `anyio`.
 
@@ -84,7 +85,9 @@ brew install exiftool
 
 If the script runs in another environment, make sure `exiftool` is available in `PATH`.
 
-### 3. Configure the API Key
+### 3. Configure the Model Backend
+
+For Gemini:
 
 Create a `.env` file in the project root:
 
@@ -92,10 +95,20 @@ Create a `.env` file in the project root:
 GEMINI_API_KEY=your_api_key
 ```
 
-You can also add optional settings such as:
+For Ollama on your Mac:
 
 ```env
-GEMINI_MODEL=gemini-2.5-flash
+MODEL_BACKEND=ollama
+OLLAMA_MODEL=qwen2.5vl:7b
+OLLAMA_HOST=http://localhost:11434
+```
+
+Use `localhost` or `127.0.0.1` for local runs.
+Do not use `0.0.0.0` as the client host. `0.0.0.0` is a bind/listen address, not a target address.
+
+You can also add optional shared settings such as:
+
+```env
 REQUESTS_PER_MINUTE=8
 BATCH_SIZE=5
 MAX_FILES_PER_RUN=220
@@ -112,6 +125,30 @@ python3 -m src \
   --progress /Volumes/homes/ben/Photos/.ai-tags-progress.json \
   --root /Volumes/homes/ben/Photos/
 ```
+
+### Run with Local Ollama on macOS
+
+If you already have `qwen2.5vl:7b` installed in Ollama, you can run the entire library locally on your Mac:
+
+```bash
+python3 -m src \
+  --backend ollama \
+  --model qwen2.5vl:7b \
+  --ollama-host http://localhost:11434 \
+  --batch-size 3 \
+  --requests-per-minute 60 \
+  --request-timeout 300 \
+  --progress /Volumes/homes/ben/Photos/.ai-tags-progress.json \
+  --root /Volumes/homes/ben/Photos/
+```
+
+Recommended starting point for `qwen2.5vl:7b` on a Mac mini Pro:
+
+- `--batch-size 2` or `--batch-size 3`
+- `--request-timeout 300`
+- `--requests-per-minute 60`
+
+When using the Ollama backend on macOS, the script will automatically convert formats such as `HEIC/HEIF/HIF/TIFF/BMP/GIF` into temporary `JPEG` files before sending them to Ollama. Native `jpg/png/webp` files are sent directly.
 
 ## Running on Synology NAS
 
@@ -144,6 +181,7 @@ you can safely ignore it for the current version of this project, because the ru
 
 ```bash
 python3 -m src \
+  --backend gemini \
   --model gemini-2.5-flash \
   --requests-per-minute 8 \
   --batch-size 5 \
@@ -176,11 +214,13 @@ python3 -m src \
 
 - `--root`: photo root directory to scan recursively
 - `--progress`: path to the progress file
-- `--model`: Gemini model name
+- `--backend`: `gemini` or `ollama`
+- `--model`: model name for the selected backend
+- `--ollama-host`: Ollama API host, defaults to `http://localhost:11434`
 - `--requests-per-minute`: client-side rate limit
 - `--request-timeout`: request timeout in seconds
-- `--max-inline-bytes`: send small images inline; larger ones use the Files API
-- `--batch-size`: number of images to send in one Gemini request
+- `--max-inline-bytes`: thumbnail fallback threshold used when selecting input files
+- `--batch-size`: number of images to send in one model request
 - `--max-files-per-run`: maximum number of new files to process in a single run
 - `--wait-for-root-seconds`: how long to wait for the NAS path to appear
 - `--force`: ignore the progress file and reprocess everything
@@ -227,7 +267,8 @@ This ensures that newly processed images do not end up with “today” as their
 
 ## Known Limitations
 
-- The project currently depends on the Gemini API, so API usage may cost money
+- Gemini usage may cost money
+- Local Ollama runs avoid API cost but are slower than a cloud API
 - Writing metadata into non-RAW files depends on `exiftool`
 - If a file’s timestamp was already changed by an older version of the script, this project does not automatically restore that historical value
 - Synology Photos does not index metadata exactly the same way for every file format, so you should validate search behavior on a small sample set first
@@ -235,7 +276,9 @@ This ensures that newly processed images do not end up with “today” as their
 ## Project Files
 
 - `src/config.py`: configuration and CLI argument parsing
+- `src/analysis_schema.py`: shared prompt, schema, and result normalization
 - `src/gemini_client.py`: Gemini API integration
+- `src/ollama_client.py`: local Ollama integration
 - `src/photo_tagger.py`: scanning, skip logic, and progress tracking
 - `src/metadata_writer.py`: metadata writing for regular images and backup handling
 - `src/xmp_writer.py`: XMP sidecar writing for RAW files

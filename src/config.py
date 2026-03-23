@@ -4,6 +4,7 @@ import argparse
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 
 TRUTHY_VALUES = {"1", "true", "yes", "on"}
@@ -52,8 +53,10 @@ DEFAULT_IMAGE_EXTENSIONS = {
 class AppConfig:
     root: Path
     progress_path: Path
+    backend: str
     api_key: str
     model: str
+    ollama_host: str
     requests_per_minute: int
     request_timeout_seconds: int
     max_inline_bytes: int
@@ -95,9 +98,39 @@ def _csv_extensions(value: str | None, default: set[str]) -> set[str]:
     return {part.strip().lower() for part in value.split(",") if part.strip()}
 
 
+def _normalize_ollama_host(value: str) -> str:
+    stripped = value.strip()
+    if not stripped:
+        return "http://localhost:11434"
+    if "://" not in stripped:
+        stripped = f"http://{stripped}"
+
+    parsed = urlsplit(stripped)
+    host = parsed.hostname
+    if not host:
+        raise SystemExit(
+            "Invalid Ollama host. Use something like http://localhost:11434."
+        )
+    if host == "0.0.0.0":
+        host = "127.0.0.1"
+
+    port = parsed.port or 11434
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+
+    normalized = SplitResult(
+        scheme=parsed.scheme or "http",
+        netloc=f"{host}:{port}",
+        path=parsed.path.rstrip("/"),
+        query="",
+        fragment="",
+    )
+    return urlunsplit(normalized).rstrip("/")
+
+
 def parse_args() -> AppConfig:
     parser = argparse.ArgumentParser(
-        description="Generate bilingual Synology Photos XMP tags with Gemini OCR."
+        description="Generate bilingual Synology Photos tags with Gemini or Ollama."
     )
     parser.add_argument("--root", type=Path, help="Photo library root directory.")
     parser.add_argument(
@@ -112,13 +145,22 @@ def parse_args() -> AppConfig:
         help="Optional .env file to load before reading environment variables.",
     )
     parser.add_argument(
+        "--backend",
+        choices=("gemini", "ollama"),
+        help="Model backend to use.",
+    )
+    parser.add_argument(
         "--model",
-        help="Gemini model name, e.g. gemini-2.5-flash.",
+        help="Model name, e.g. gemini-2.5-flash or qwen2.5vl:7b.",
+    )
+    parser.add_argument(
+        "--ollama-host",
+        help="Ollama API host, e.g. http://localhost:11434.",
     )
     parser.add_argument(
         "--requests-per-minute",
         type=int,
-        help="Client-side rate limit. Gemini free tier is commonly 30 RPM.",
+        help="Client-side rate limit between model requests.",
     )
     parser.add_argument(
         "--request-timeout",
@@ -128,12 +170,12 @@ def parse_args() -> AppConfig:
     parser.add_argument(
         "--max-inline-bytes",
         type=int,
-        help="Max image bytes sent inline to Gemini before falling back to @eaDir thumbnail.",
+        help="Thumbnail fallback threshold for large non-RAW images.",
     )
     parser.add_argument(
         "--batch-size",
         type=int,
-        help="Number of images to send in one Gemini request.",
+        help="Number of images to send in one model request.",
     )
     parser.add_argument(
         "--max-files-per-run",
@@ -172,19 +214,32 @@ def parse_args() -> AppConfig:
         )
     ).expanduser()
 
+    backend = args.backend or os.getenv("MODEL_BACKEND", "gemini")
+    default_model = (
+        os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        if backend == "gemini"
+        else os.getenv("OLLAMA_MODEL", "qwen2.5vl:7b")
+    )
+    default_requests_per_minute = "28" if backend == "gemini" else "60"
+    default_request_timeout = "90" if backend == "gemini" else "300"
+
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
-    if not api_key:
+    if backend == "gemini" and not api_key:
         raise SystemExit("Missing GEMINI_API_KEY.")
 
     config = AppConfig(
         root=root,
         progress_path=progress_path.resolve(),
+        backend=backend,
         api_key=api_key,
-        model=args.model or os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+        model=args.model or default_model,
+        ollama_host=_normalize_ollama_host(
+            args.ollama_host or os.getenv("OLLAMA_HOST", "http://localhost:11434")
+        ),
         requests_per_minute=args.requests_per_minute
-        or int(os.getenv("REQUESTS_PER_MINUTE", "28")),
+        or int(os.getenv("REQUESTS_PER_MINUTE", default_requests_per_minute)),
         request_timeout_seconds=args.request_timeout
-        or int(os.getenv("REQUEST_TIMEOUT_SECONDS", "90")),
+        or int(os.getenv("REQUEST_TIMEOUT_SECONDS", default_request_timeout)),
         max_inline_bytes=args.max_inline_bytes
         or int(os.getenv("MAX_INLINE_BYTES", str(14 * 1024 * 1024))),
         batch_size=(
@@ -218,6 +273,8 @@ def parse_args() -> AppConfig:
         ),
     )
 
+    if config.backend not in {"gemini", "ollama"}:
+        raise SystemExit("backend must be either 'gemini' or 'ollama'.")
     if config.requests_per_minute <= 0:
         raise SystemExit("requests-per-minute must be greater than 0.")
     if config.batch_size <= 0:
