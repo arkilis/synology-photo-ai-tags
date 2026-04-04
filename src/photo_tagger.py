@@ -55,13 +55,42 @@ class PhotoTagger:
         failed_count = 0
         pending_assets: list[PendingAsset] = []
         assets = list(self._iter_assets())
+        total_assets = len(assets)
+        start_index = 0
+
+        if self.config.resume_from_last_processed:
+            start_index, last_processed_path, resume_match_found = self._resume_start_index(assets)
+            if last_processed_path and resume_match_found:
+                if start_index >= total_assets:
+                    print(
+                        "Resume mode enabled. "
+                        f"Last processed file is already the final supported file: "
+                        f"{last_processed_path}"
+                    )
+                    print("Done. processed=0 skipped=0 failed=0")
+                    return
+                print(
+                    "Resume mode enabled. "
+                    f"Starting after {last_processed_path}"
+                )
+            elif last_processed_path:
+                print(
+                    "Resume mode enabled, but the last processed file was not found "
+                    f"under the current root: {last_processed_path}. "
+                    "Starting from the beginning."
+                )
+            else:
+                print(
+                    "Resume mode enabled, but no previous completed file was found. "
+                    "Starting from the beginning."
+                )
 
         print(
-            f"Found {len(assets)} supported files under {self.config.root} "
+            f"Found {total_assets} supported files under {self.config.root} "
             "(recursive scan enabled)"
         )
         print(f"Using {self.config.backend} model {self.config.model}")
-        for index, asset_path in enumerate(assets, start=1):
+        for index, asset_path in enumerate(assets[start_index:], start=start_index + 1):
             if (
                 self.config.max_files_per_run is not None
                 and processed_count >= self.config.max_files_per_run
@@ -96,19 +125,19 @@ class PhotoTagger:
                 ):
                     batch_processed, batch_failed = self._process_pending_assets(
                         pending_assets,
-                        total_assets=len(assets),
+                        total_assets=total_assets,
                     )
                     processed_count += batch_processed
                     failed_count += batch_failed
                     pending_assets = []
             except Exception as exc:  # noqa: BLE001
                 failed_count += 1
-                print(f"[{index}/{len(assets)}] fail {asset_path}: {exc}")
+                print(f"[{index}/{total_assets}] fail {asset_path}: {exc}")
 
         if pending_assets:
             batch_processed, batch_failed = self._process_pending_assets(
                 pending_assets,
-                total_assets=len(assets),
+                total_assets=total_assets,
             )
             processed_count += batch_processed
             failed_count += batch_failed
@@ -166,6 +195,16 @@ class PhotoTagger:
             if path.suffix.lower() not in self.config.supported_extensions:
                 continue
             yield path
+
+    def _resume_start_index(self, assets: list[Path]) -> tuple[int, str | None, bool]:
+        last_processed_path = self._last_processed_path()
+        if not last_processed_path:
+            return 0, None, False
+
+        for index, asset_path in enumerate(assets):
+            if self._progress_key_for_asset(asset_path) == last_processed_path:
+                return index + 1, last_processed_path, True
+        return 0, last_processed_path, False
 
     def _load_progress(self) -> dict[str, dict[str, object]]:
         if not self.config.progress_path.exists():
@@ -431,6 +470,22 @@ class PhotoTagger:
         if isinstance(updated_at, str):
             return updated_at
         return ""
+
+    def _last_processed_path(self) -> str | None:
+        processed = self.progress.get("processed", {})
+        latest_path: str | None = None
+        latest_updated_at = ""
+        for entry in processed.values():
+            if not isinstance(entry, dict):
+                continue
+            path = entry.get("path")
+            updated_at = self._entry_updated_at(entry)
+            if not isinstance(path, str) or not path:
+                continue
+            if updated_at >= latest_updated_at:
+                latest_updated_at = updated_at
+                latest_path = path
+        return latest_path
 
 
 def _coerce_string_list(value: object) -> list[str]:

@@ -15,6 +15,7 @@ python3 -m src \
   --backend ollama \
   --model qwen2.5vl:7b \
   --ollama-host http://localhost:11434 \
+  --resume-from-last-processed \
   --batch-size 1 \
   --requests-per-minute 30 \
   --request-timeout 300 \

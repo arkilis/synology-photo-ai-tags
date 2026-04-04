@@ -21,6 +21,7 @@ This metadata is then written back to the photo so it can be searched directly i
 - Generates both Chinese and English keywords
 - Supports resumable runs via `progress.json`
 - Uses a root-relative photo path to determine whether a file has already been processed
+- Supports resuming from the last successfully processed file to avoid scanning from the top
 - Creates a backup copy as `original_filename_BAK` before modifying a regular image
 - Restores the original `modified date/time` after writing metadata to a regular image
 - Can wait for a NAS mount to become available before starting
@@ -246,6 +247,20 @@ python3 -m src \
   --root /Volumes/homes/ben/Photos/MobileBackup/iPhone/2026/test
 ```
 
+### Resume from the Last Completed File
+
+If a long run is interrupted and you want to continue from the point after the last successful photo instead of printing thousands of `skip` lines from the top, use:
+
+```bash
+python3 -m src \
+  --resume-from-last-processed \
+  --batch-size 5 \
+  --progress /Volumes/homes/ben/Photos/.ai-tags-progress.json \
+  --root /Volumes/homes/ben/Photos/
+```
+
+This mode is intended for interruption recovery. To revisit older failed files or newly added files that sort earlier in the library, run again without `--resume-from-last-processed`.
+
 ### Analyze Only, Without Writing Metadata
 
 ```bash
@@ -270,6 +285,7 @@ python3 -m src \
 - `--batch-size`: number of images to send in one model request
 - `--max-files-per-run`: maximum number of new files to process in a single run
 - `--wait-for-root-seconds`: how long to wait for the NAS path to appear
+- `--resume-from-last-processed`: start after the most recently completed file in the progress file
 - `--force`: ignore the progress file and reprocess everything
 - `--dry-run`: analyze only, without writing metadata or updating progress
 
@@ -287,6 +303,8 @@ python3 -m src \
 The script uses the photo path relative to `--root` to decide whether a file has already been processed. This makes the same progress file reusable across macOS and Windows, as long as both runs point `--root` at the same photo library structure.
 
 Older progress files that stored absolute paths are normalized on load when the script can infer the same library root name, so existing progress files can continue to work after upgrading.
+
+When `--resume-from-last-processed` is enabled, the script finds the most recent successful entry by `updated_at` and starts after that file in the current sorted scan order.
 
 ## NAS Mount Handling
 

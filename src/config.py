@@ -64,6 +64,7 @@ class AppConfig:
     batch_size: int
     max_files_per_run: int | None
     wait_for_root_seconds: int
+    resume_from_last_processed: bool
     force_reprocess: bool
     dry_run: bool
     raw_extensions: set[str]
@@ -193,6 +194,11 @@ def parse_args() -> AppConfig:
         help="Wait this many seconds for the photo root to appear before failing.",
     )
     parser.add_argument(
+        "--resume-from-last-processed",
+        action="store_true",
+        help="Start after the most recently completed file recorded in progress.json.",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Reprocess files even if progress.json says they are unchanged.",
@@ -272,6 +278,10 @@ def parse_args() -> AppConfig:
                 if os.getenv("WAIT_FOR_ROOT_SECONDS")
                 else (120 if str(root).startswith("/Volumes/") else 0)
             )
+        ),
+        resume_from_last_processed=(
+            args.resume_from_last_processed
+            or _env_bool("RESUME_FROM_LAST_PROCESSED", False)
         ),
         force_reprocess=args.force or _env_bool("FORCE_REPROCESS", False),
         dry_run=args.dry_run or _env_bool("DRY_RUN", False),
