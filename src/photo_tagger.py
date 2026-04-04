@@ -4,7 +4,7 @@ import json
 import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from .config import AppConfig
 from .gemini_client import GeminiClient
@@ -171,9 +171,10 @@ class PhotoTagger:
         if not self.config.progress_path.exists():
             return {"processed": {}}
         try:
-            return json.loads(self.config.progress_path.read_text(encoding="utf-8"))
+            raw_progress = json.loads(self.config.progress_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             return {"processed": {}}
+        return {"processed": self._canonicalize_progress(raw_progress.get("processed", {}))}
 
     def _save_progress(self) -> None:
         self.config.progress_path.parent.mkdir(parents=True, exist_ok=True)
@@ -181,6 +182,32 @@ class PhotoTagger:
             json.dumps(self.progress, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+
+    def _canonicalize_progress(
+        self,
+        processed: object,
+    ) -> dict[str, dict[str, object]]:
+        if not isinstance(processed, dict):
+            return {}
+
+        canonical: dict[str, dict[str, object]] = {}
+        for raw_key, raw_entry in processed.items():
+            if not isinstance(raw_entry, dict):
+                continue
+            key = self._normalize_progress_key(
+                raw_entry.get("path") if raw_entry.get("path") else raw_key
+            )
+            if not key:
+                continue
+            entry = dict(raw_entry)
+            entry["path"] = key
+            normalized_input_image = self._normalize_progress_key(entry.get("input_image"))
+            if normalized_input_image:
+                entry["input_image"] = normalized_input_image
+            existing = canonical.get(key)
+            if existing is None or self._entry_updated_at(entry) >= self._entry_updated_at(existing):
+                canonical[key] = entry
+        return canonical
 
     def _should_skip(
         self,
@@ -332,13 +359,13 @@ class PhotoTagger:
         write_result,
     ) -> None:
         stat = asset_path.stat()
-        key = str(asset_path.resolve())
+        key = self._progress_key_for_asset(asset_path)
         entry = ProgressEntry(
             path=key,
             source_size=stat.st_size,
             source_mtime_ns=stat.st_mtime_ns,
             input_image=(
-                str(input_image.relative_to(self.config.root))
+                input_image.relative_to(self.config.root).as_posix()
                 if input_image.is_relative_to(self.config.root)
                 else str(input_image)
             ),
@@ -352,25 +379,58 @@ class PhotoTagger:
 
     def _get_progress_entry(self, asset_path: Path) -> dict[str, object] | None:
         processed = self.progress.get("processed", {})
-        absolute_key = str(asset_path.resolve())
-        entry = processed.get(absolute_key)
+        key = self._progress_key_for_asset(asset_path)
+        entry = processed.get(key)
         if isinstance(entry, dict):
             return entry
 
-        legacy_relative_key = None
-        try:
-            legacy_relative_key = str(asset_path.relative_to(self.config.root))
-        except ValueError:
-            legacy_relative_key = None
-        if legacy_relative_key:
-            legacy_entry = processed.get(legacy_relative_key)
-            if isinstance(legacy_entry, dict):
-                return legacy_entry
+        for legacy_absolute_key in (
+            str(asset_path.resolve()),
+            asset_path.resolve().as_posix(),
+        ):
+            legacy_absolute_entry = processed.get(legacy_absolute_key)
+            if isinstance(legacy_absolute_entry, dict):
+                return legacy_absolute_entry
 
         legacy_name_entry = processed.get(asset_path.name)
         if isinstance(legacy_name_entry, dict):
             return legacy_name_entry
         return None
+
+    def _progress_key_for_asset(self, asset_path: Path) -> str:
+        return asset_path.relative_to(self.config.root).as_posix()
+
+    def _normalize_progress_key(self, value: object) -> str | None:
+        if not isinstance(value, str):
+            return None
+        stripped = value.strip()
+        if not stripped:
+            return None
+
+        if "/" not in stripped and "\\" not in stripped and ":" not in stripped:
+            return stripped
+
+        if ":" in stripped or "\\" in stripped:
+            parts = PureWindowsPath(stripped).parts
+        else:
+            parts = PurePosixPath(stripped).parts
+
+        root_name = self.config.root.name.casefold()
+        for index in range(len(parts) - 1, -1, -1):
+            if parts[index].casefold() != root_name:
+                continue
+            relative_parts = parts[index + 1 :]
+            if relative_parts:
+                return PurePosixPath(*relative_parts).as_posix()
+            break
+
+        return stripped.replace("\\", "/")
+
+    def _entry_updated_at(self, entry: dict[str, object]) -> str:
+        updated_at = entry.get("updated_at")
+        if isinstance(updated_at, str):
+            return updated_at
+        return ""
 
 
 def _coerce_string_list(value: object) -> list[str]:

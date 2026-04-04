@@ -20,7 +20,7 @@ This metadata is then written back to the photo so it can be searched directly i
 - Extracts visible text from images and stores it in searchable fields
 - Generates both Chinese and English keywords
 - Supports resumable runs via `progress.json`
-- Uses the file `path` to determine whether a file has already been processed
+- Uses a root-relative photo path to determine whether a file has already been processed
 - Creates a backup copy as `original_filename_BAK` before modifying a regular image
 - Restores the original `modified date/time` after writing metadata to a regular image
 - Can wait for a NAS mount to become available before starting
@@ -277,14 +277,16 @@ python3 -m src \
 
 `progress.json` or `.ai-tags-progress.json` stores:
 
-- absolute file path
-- input image path
+- root-relative photo path in POSIX form, for example `MobileBackup/iPhone/2023/02/IMG_0001.HEIC`
+- root-relative input image path
 - write mode: `embedded` or `xmp`
 - generated keywords
 - generated description
 - update timestamp
 
-The script now uses the file `path` to decide whether a file has already been processed. As long as the same file stays at the same path, it will not be processed again.
+The script uses the photo path relative to `--root` to decide whether a file has already been processed. This makes the same progress file reusable across macOS and Windows, as long as both runs point `--root` at the same photo library structure.
+
+Older progress files that stored absolute paths are normalized on load when the script can infer the same library root name, so existing progress files can continue to work after upgrading.
 
 ## NAS Mount Handling
 
