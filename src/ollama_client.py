@@ -9,6 +9,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from locale import getpreferredencoding
 from pathlib import Path
 
 from .analysis_schema import (
@@ -155,12 +156,15 @@ class OllamaClient:
                 check=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
-                text=True,
             )
             return temp_path
         except subprocess.CalledProcessError as exc:
             temp_path.unlink(missing_ok=True)
-            stderr = exc.stderr.strip() if exc.stderr else "unknown converter error"
+            stderr = (
+                _decode_subprocess_output(exc.stderr).strip()
+                if exc.stderr
+                else "unknown converter error"
+            )
             raise RuntimeError(
                 f"Failed to convert {image_path.name} to a temporary JPEG for Ollama "
                 f"using {converter}: {stderr}"
@@ -199,3 +203,16 @@ def _converter_command(converter: str, *, image_path: Path, output_path: Path) -
 
 def _read_base64(image_path: Path) -> str:
     return base64.b64encode(image_path.read_bytes()).decode("ascii")
+
+
+def _decode_subprocess_output(output: bytes | str | None) -> str:
+    if output is None:
+        return ""
+    if isinstance(output, str):
+        return output
+    for encoding in ("utf-8", getpreferredencoding(False) or "utf-8"):
+        try:
+            return output.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return output.decode("utf-8", errors="replace")

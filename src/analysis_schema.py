@@ -106,7 +106,15 @@ def batch_response_schema() -> dict[str, object]:
 
 
 def extract_json_text(text: str) -> dict[str, object]:
-    return json.loads(strip_json_fence(text.strip()))
+    cleaned = strip_json_fence(text.strip())
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        preview = cleaned[:400].replace("\n", "\\n")
+        raise RuntimeError(
+            "Model returned invalid JSON "
+            f"({exc.msg} at line {exc.lineno} column {exc.colno}). Preview: {preview}"
+        ) from exc
 
 
 def parse_batch_results(parsed: dict[str, object], expected_count: int) -> list[AnalysisResult]:

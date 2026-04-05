@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 from dataclasses import dataclass
+from locale import getpreferredencoding
 from pathlib import Path
 
 from .gemini_client import AnalysisResult
@@ -83,6 +84,8 @@ def _read_embedded_metadata(asset_path: Path) -> EmbeddedMetadata:
     command = [
         "exiftool",
         "-j",
+        "-charset",
+        "UTF8",
         "-XMP-dc:Subject",
         "-IPTC:Keywords",
         "-XMP-dc:Description",
@@ -94,9 +97,8 @@ def _read_embedded_metadata(asset_path: Path) -> EmbeddedMetadata:
         command,
         check=True,
         capture_output=True,
-        text=True,
     )
-    payload = json.loads(completed.stdout)
+    payload = json.loads(_decode_subprocess_output(completed.stdout))
     row = payload[0] if payload else {}
 
     keywords = _dedupe(
@@ -121,6 +123,8 @@ def _write_embedded_metadata(asset_path: Path, *, keywords: list[str], descripti
         "-overwrite_original_in_place",
         "-tagsFromFile",
         "@",
+        "-charset",
+        "UTF8",
         "-FileCreateDate",
         "-charset",
         "filename=UTF8",
@@ -144,14 +148,16 @@ def _write_embedded_metadata(asset_path: Path, *, keywords: list[str], descripti
         command,
         check=True,
         capture_output=True,
-        text=True,
     )
     if completed.returncode != 0:
-        raise RuntimeError(completed.stderr.strip() or completed.stdout.strip())
-    os.utime(
+        raise RuntimeError(
+            _decode_subprocess_output(completed.stderr).strip()
+            or _decode_subprocess_output(completed.stdout).strip()
+        )
+    _restore_file_times(
         asset_path,
-        ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
-        follow_symlinks=False,
+        atime_ns=original_stat.st_atime_ns,
+        mtime_ns=original_stat.st_mtime_ns,
     )
     restored_stat = asset_path.stat()
     if restored_stat.st_mtime_ns != original_stat.st_mtime_ns:
@@ -244,3 +250,30 @@ def _dedupe(values: list[str]) -> list[str]:
         seen.add(key)
         result.append(value)
     return result
+
+
+def _decode_subprocess_output(output: bytes | str | None) -> str:
+    if output is None:
+        return ""
+    if isinstance(output, str):
+        return output
+    for encoding in ("utf-8", getpreferredencoding(False) or "utf-8"):
+        try:
+            return output.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return output.decode("utf-8", errors="replace")
+
+
+def _restore_file_times(asset_path: Path, *, atime_ns: int, mtime_ns: int) -> None:
+    try:
+        os.utime(
+            asset_path,
+            ns=(atime_ns, mtime_ns),
+            follow_symlinks=False,
+        )
+    except (NotImplementedError, ValueError):
+        os.utime(
+            asset_path,
+            ns=(atime_ns, mtime_ns),
+        )
