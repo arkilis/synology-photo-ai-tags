@@ -58,10 +58,12 @@ class AppConfig:
     model: str
     ollama_host: str
     image_converter_bin: str | None
+    ollama_prepare_workers: int
     requests_per_minute: int
     request_timeout_seconds: int
     max_inline_bytes: int
     batch_size: int
+    metadata_write_workers: int
     max_files_per_run: int | None
     wait_for_root_seconds: int
     resume_from_last_processed: bool
@@ -164,6 +166,11 @@ def parse_args() -> AppConfig:
         help="Optional image converter command for Ollama, e.g. sips or magick.",
     )
     parser.add_argument(
+        "--ollama-prepare-workers",
+        type=int,
+        help="Number of worker threads for Ollama image preparation and base64 encoding.",
+    )
+    parser.add_argument(
         "--requests-per-minute",
         type=int,
         help="Client-side rate limit between model requests.",
@@ -182,6 +189,11 @@ def parse_args() -> AppConfig:
         "--batch-size",
         type=int,
         help="Number of images to send in one model request.",
+    )
+    parser.add_argument(
+        "--metadata-write-workers",
+        type=int,
+        help="Number of worker threads for metadata writes within each completed batch.",
     )
     parser.add_argument(
         "--max-files-per-run",
@@ -250,6 +262,16 @@ def parse_args() -> AppConfig:
         image_converter_bin=(
             (args.image_converter_bin or os.getenv("IMAGE_CONVERTER_BIN", "")).strip() or None
         ),
+        ollama_prepare_workers=(
+            args.ollama_prepare_workers
+            if args.ollama_prepare_workers is not None
+            else int(
+                os.getenv(
+                    "OLLAMA_PREPARE_WORKERS",
+                    str(min(8, max(1, os.cpu_count() or 1))),
+                )
+            )
+        ),
         requests_per_minute=args.requests_per_minute
         or int(os.getenv("REQUESTS_PER_MINUTE", default_requests_per_minute)),
         request_timeout_seconds=args.request_timeout
@@ -260,6 +282,16 @@ def parse_args() -> AppConfig:
             args.batch_size
             if args.batch_size is not None
             else int(os.getenv("BATCH_SIZE", "5"))
+        ),
+        metadata_write_workers=(
+            args.metadata_write_workers
+            if args.metadata_write_workers is not None
+            else int(
+                os.getenv(
+                    "METADATA_WRITE_WORKERS",
+                    str(min(4, max(1, os.cpu_count() or 1))),
+                )
+            )
         ),
         max_files_per_run=(
             args.max_files_per_run
@@ -295,8 +327,12 @@ def parse_args() -> AppConfig:
         raise SystemExit("backend must be either 'gemini' or 'ollama'.")
     if config.requests_per_minute <= 0:
         raise SystemExit("requests-per-minute must be greater than 0.")
+    if config.ollama_prepare_workers <= 0:
+        raise SystemExit("ollama-prepare-workers must be greater than 0.")
     if config.batch_size <= 0:
         raise SystemExit("batch-size must be greater than 0.")
+    if config.metadata_write_workers <= 0:
+        raise SystemExit("metadata-write-workers must be greater than 0.")
     if config.max_files_per_run is not None and config.max_files_per_run <= 0:
         raise SystemExit("max-files-per-run must be greater than 0.")
     if config.wait_for_root_seconds < 0:

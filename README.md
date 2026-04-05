@@ -117,6 +117,8 @@ MODEL_BACKEND=ollama
 OLLAMA_MODEL=qwen2.5vl:7b
 OLLAMA_HOST=http://localhost:11434
 IMAGE_CONVERTER_BIN=magick
+OLLAMA_PREPARE_WORKERS=6
+METADATA_WRITE_WORKERS=4
 ```
 
 You can also add optional shared settings such as:
@@ -175,9 +177,11 @@ python -m src `
   --model qwen2.5vl:7b `
   --ollama-host http://localhost:11434 `
   --image-converter-bin magick `
-  --batch-size 4 `
+  --batch-size 8 `
+  --ollama-prepare-workers 6 `
+  --metadata-write-workers 4 `
   --requests-per-minute 999 `
-  --request-timeout 600 `
+  --request-timeout 900 `
   --progress Z:\Photos\.ai-tags-progress.json `
   --root Z:\Photos
 ```
@@ -185,10 +189,20 @@ python -m src `
 You can also use the included helper script:
 
 ```powershell
-.\run-windows.ps1 -Root Z:\Photos
+.\run-windows-python311.ps1 -Root \\SynologyDS920\home\Photos
 ```
 
-`run-windows.ps1` checks `magick` and `exiftool` first. If either command is missing, it attempts to install them with `winget` before starting the Python script.
+`run-windows-python311.ps1` checks `magick` and `exiftool` first. If either command is missing, it attempts to install them with `winget` before starting the Python script.
+
+For a `Ryzen 5 7200F + RTX 3080 Ti`, a practical high-throughput starting point is:
+
+- `qwen2.5vl:7b` with `BatchSize=8` to `10`
+- `OllamaPrepareWorkers=6`
+- `MetadataWriteWorkers=4`
+- `RequestsPerMinute=999`
+- `RequestTimeout=900`
+
+If you want the fastest possible first pass through a very large library and are willing to trade some quality for throughput, switch to `qwen2.5vl:3b` and keep the same worker settings.
 
 Recommended Windows setup:
 
@@ -279,10 +293,12 @@ python3 -m src \
 - `--model`: model name for the selected backend
 - `--ollama-host`: Ollama API host, defaults to `http://localhost:11434`
 - `--image-converter-bin`: optional converter command for Ollama, e.g. `sips` or `magick`
+- `--ollama-prepare-workers`: worker threads for image conversion and base64 encoding before each Ollama request
 - `--requests-per-minute`: client-side rate limit
 - `--request-timeout`: request timeout in seconds
 - `--max-inline-bytes`: thumbnail fallback threshold used when selecting input files
 - `--batch-size`: number of images to send in one model request
+- `--metadata-write-workers`: worker threads for metadata writes after each completed batch
 - `--max-files-per-run`: maximum number of new files to process in a single run
 - `--wait-for-root-seconds`: how long to wait for the NAS path to appear
 - `--resume-from-last-processed`: start after the most recently completed file in the progress file

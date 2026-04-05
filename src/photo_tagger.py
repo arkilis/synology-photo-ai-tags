@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -153,6 +154,7 @@ class PhotoTagger:
                 model=self.config.model,
                 host=self.config.ollama_host,
                 image_converter_bin=self.config.image_converter_bin,
+                prepare_workers=self.config.ollama_prepare_workers,
                 timeout_seconds=self.config.request_timeout_seconds,
                 requests_per_minute=self.config.requests_per_minute,
             )
@@ -354,24 +356,18 @@ class PhotoTagger:
     ) -> tuple[int, int]:
         processed_count = 0
         failed_count = 0
-        for pending_asset, result in zip(pending_assets, results, strict=True):
+        write_outcomes: list[object] = []
+        if not self.config.dry_run:
+            write_outcomes = self._write_batch_metadata(pending_assets, results)
+
+        for index, (pending_asset, result) in enumerate(
+            zip(pending_assets, results, strict=True)
+        ):
             try:
                 if not self.config.dry_run:
-                    write_result = write_photo_metadata(
-                        pending_asset.asset_path,
-                        result,
-                        is_raw=pending_asset.asset_path.suffix.lower() in self.config.raw_extensions,
-                        previous_generated_keywords=_coerce_string_list(
-                            pending_asset.existing_entry.get("generated_keywords")
-                            if pending_asset.existing_entry
-                            else None
-                        ),
-                        previous_generated_description=str(
-                            pending_asset.existing_entry.get("generated_description", "")
-                            if pending_asset.existing_entry
-                            else ""
-                        ),
-                    )
+                    write_result = write_outcomes[index]
+                    if isinstance(write_result, Exception):
+                        raise write_result
                     self._record_success(
                         pending_asset.asset_path,
                         pending_asset.input_image,
@@ -390,6 +386,56 @@ class PhotoTagger:
                     f"fail {pending_asset.asset_path}: {exc}"
                 )
         return processed_count, failed_count
+
+    def _write_batch_metadata(
+        self,
+        pending_assets: list[PendingAsset],
+        results: list,
+    ) -> list[object]:
+        if len(pending_assets) <= 1 or self.config.metadata_write_workers <= 1:
+            return [
+                self._write_pending_asset_metadata(pending_asset, result)
+                for pending_asset, result in zip(pending_assets, results, strict=True)
+            ]
+
+        outcomes: list[object | None] = [None] * len(pending_assets)
+        max_workers = min(len(pending_assets), self.config.metadata_write_workers)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(self._write_pending_asset_metadata, pending_asset, result): index
+                for index, (pending_asset, result) in enumerate(
+                    zip(pending_assets, results, strict=True)
+                )
+            }
+            for future in as_completed(futures):
+                index = futures[future]
+                try:
+                    outcomes[index] = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    outcomes[index] = exc
+
+        return [outcome for outcome in outcomes if outcome is not None]
+
+    def _write_pending_asset_metadata(
+        self,
+        pending_asset: PendingAsset,
+        result,
+    ):
+        return write_photo_metadata(
+            pending_asset.asset_path,
+            result,
+            is_raw=pending_asset.asset_path.suffix.lower() in self.config.raw_extensions,
+            previous_generated_keywords=_coerce_string_list(
+                pending_asset.existing_entry.get("generated_keywords")
+                if pending_asset.existing_entry
+                else None
+            ),
+            previous_generated_description=str(
+                pending_asset.existing_entry.get("generated_description", "")
+                if pending_asset.existing_entry
+                else ""
+            ),
+        )
 
     def _record_success(
         self,

@@ -9,6 +9,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from locale import getpreferredencoding
 from pathlib import Path
 
@@ -31,12 +32,14 @@ class OllamaClient:
         model: str,
         host: str,
         image_converter_bin: str | None,
+        prepare_workers: int,
         timeout_seconds: int,
         requests_per_minute: int,
     ):
         self.model = model
         self.host = host.rstrip("/")
         self.image_converter_bin = image_converter_bin
+        self.prepare_workers = max(1, prepare_workers)
         self.timeout_seconds = timeout_seconds
         self.min_interval_seconds = 60.0 / requests_per_minute
         self._last_request_monotonic = 0.0
@@ -51,8 +54,7 @@ class OllamaClient:
         prepared_paths: list[Path] = []
         temp_paths: list[Path] = []
         try:
-            for image_path in image_paths:
-                prepared_path, is_temporary = self._prepare_image(image_path)
+            for prepared_path, is_temporary in self._prepare_images(image_paths):
                 prepared_paths.append(prepared_path)
                 if is_temporary:
                     temp_paths.append(prepared_path)
@@ -60,7 +62,7 @@ class OllamaClient:
             payload = {
                 "model": self.model,
                 "prompt": batch_analysis_prompt(image_paths),
-                "images": [_read_base64(image_path) for image_path in prepared_paths],
+                "images": self._encode_images(prepared_paths),
                 "format": batch_response_schema(),
                 "stream": False,
                 "options": {"temperature": generation_temperature()},
@@ -133,6 +135,44 @@ class OllamaClient:
         if image_path.suffix.lower() in OLLAMA_NATIVE_IMAGE_SUFFIXES:
             return image_path, False
         return self._convert_to_jpeg(image_path), True
+
+    def _prepare_images(self, image_paths: list[Path]) -> list[tuple[Path, bool]]:
+        if len(image_paths) <= 1 or self.prepare_workers <= 1:
+            return [self._prepare_image(image_path) for image_path in image_paths]
+
+        prepared_results: list[tuple[Path, bool] | None] = [None] * len(image_paths)
+        max_workers = min(len(image_paths), self.prepare_workers)
+        try:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(self._prepare_image, image_path): index
+                    for index, image_path in enumerate(image_paths)
+                }
+                for future in as_completed(futures):
+                    index = futures[future]
+                    prepared_results[index] = future.result()
+        except Exception:
+            for prepared_result in prepared_results:
+                if not prepared_result:
+                    continue
+                prepared_path, is_temporary = prepared_result
+                if is_temporary:
+                    prepared_path.unlink(missing_ok=True)
+            raise
+
+        return [
+            prepared_result
+            for prepared_result in prepared_results
+            if prepared_result is not None
+        ]
+
+    def _encode_images(self, image_paths: list[Path]) -> list[str]:
+        if len(image_paths) <= 1 or self.prepare_workers <= 1:
+            return [_read_base64(image_path) for image_path in image_paths]
+
+        max_workers = min(len(image_paths), self.prepare_workers)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            return list(executor.map(_read_base64, image_paths))
 
     def _convert_to_jpeg(self, image_path: Path) -> Path:
         converter = self.image_converter_bin or _default_image_converter()

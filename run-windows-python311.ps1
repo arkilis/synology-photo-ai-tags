@@ -6,8 +6,10 @@ param(
     [string]$OllamaHost = "http://localhost:11434",
     [string]$ImageConverterBin = "magick",
     [int]$BatchSize = 10,
+    [int]$OllamaPrepareWorkers = 6,
+    [int]$MetadataWriteWorkers = 4,
     [int]$RequestsPerMinute = 999,
-    [int]$RequestTimeout = 600,
+    [int]$RequestTimeout = 900,
     [int]$MaxFilesPerRun = 0,
     [switch]$DryRun,
     [switch]$Force
@@ -136,6 +138,8 @@ try {
         "--ollama-host", $OllamaHost,
         "--image-converter-bin", $ImageConverterBin,
         "--batch-size", $BatchSize.ToString(),
+        "--ollama-prepare-workers", $OllamaPrepareWorkers.ToString(),
+        "--metadata-write-workers", $MetadataWriteWorkers.ToString(),
         "--requests-per-minute", $RequestsPerMinute.ToString(),
         "--request-timeout", $RequestTimeout.ToString(),
         "--progress", $Progress,
@@ -156,6 +160,7 @@ try {
     Write-Step "Starting photo tagging with Ollama model $Model"
     Write-Step "Root: $Root"
     Write-Step "Progress: $Progress"
+    Write-Step "BatchSize: $BatchSize, PrepareWorkers: $OllamaPrepareWorkers, MetadataWriteWorkers: $MetadataWriteWorkers"
 
     & $pythonCommand @pythonPrefixArgs @args
 }
